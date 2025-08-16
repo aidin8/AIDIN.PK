@@ -1,0 +1,220 @@
+Assets/
+  Scripts/
+    Car/
+    UI/
+    AI/
+  Prefabs/
+  Materials/
+  Scenes/using UnityEngine;
+
+[RequireComponent(typeof(Rigidbody))]
+public class CarController : MonoBehaviour
+{
+    [Header("Physics")]
+    public Rigidbody rb;
+    public float motorForce = 3500f;      // توان حرکت رو به جلو
+    public float brakeForce = 6000f;      // ترمز
+    public float maxSteerAngle = 28f;     // حداکثر زاویه فرمان
+    public float steerSpeed = 5f;         // نرمی فرمان
+
+    [Header("Wheels (optional visuals)")]
+    public Transform wheelFL, wheelFR, wheelRL, wheelRR;
+
+    [Header("Ground")] public LayerMask groundMask;
+    public float downforce = 50f;         // چسبندگی
+
+    float currentSteer;
+
+    void Reset()
+    {
+        rb = GetComponent<Rigidbody>();
+    }
+
+    void FixedUpdate()
+    {
+        // ورودی‌ها (کیبورد + موبایل)
+        float accel = SimpleMobileInput.Accel; // -1..1
+        float steer = SimpleMobileInput.Steer; // -1..1
+        bool isBraking = SimpleMobileInput.Brake;
+
+        // نیروی جلوبرنده
+        Vector3 force = transform.forward * (accel * motorForce) * Time.fixedDeltaTime;
+        rb.AddForce(force, ForceMode.Force);
+
+        // ترمز به‌صورت درَگ + نیروی مخالف
+        if (isBraking)
+        {
+            rb.drag = Mathf.Lerp(rb.drag, 2.5f, 0.2f);
+            rb.AddForce(-rb.velocity.normalized * brakeForce * Time.fixedDeltaTime, ForceMode.Force);
+        }
+        else
+        {
+            rb.drag = Mathf.Lerp(rb.drag, 0.05f, 0.1f);
+        }
+
+        // فرمان
+        currentSteer = Mathf.Lerp(currentSteer, steer * maxSteerAngle, Time.fixedDeltaTime * steerSpeed);
+        Quaternion turn = Quaternion.Euler(0f, currentSteer * Time.fixedDeltaTime * (rb.velocity.magnitude + 10f), 0f);
+        rb.MoveRotation(rb.rotation * turn);
+
+        // داون‌فورس برای پایداری
+        rb.AddForce(-transform.up * downforce * rb.velocity.magnitude);
+
+        // همگام‌سازی چرخ‌های ویژوال (اختیاری)
+        UpdateWheelVisuals();
+    }
+
+    void UpdateWheelVisuals()
+    {
+        if (!wheelFL) return;
+        float spin = rb.velocity.magnitude * 10f;
+        Vector3 spinVec = Vector3.right * spin * Time.deltaTime;
+        wheelFL.Rotate(spinVec);
+        wheelFR.Rotate(spinVec);
+        wheelRL.Rotate(spinVec);
+        wheelRR.Rotate(spinVec);
+        // پیچش فرمان برای چرخ‌های جلو
+        wheelFL.localRotation = Quaternion.Euler(wheelFL.localRotation.eulerAngles.x, currentSteer, wheelFL.localRotation.eulerAngles.z);
+        wheelFR.localRotation = Quaternion.Euler(wheelFR.localRotation.eulerAngles.x, currentSteer, wheelFR.localRotation.eulerAngles.z);
+    }
+}using UnityEngine;
+
+// یك لایه ورودی خیلی ساده برای موبایل + پشتیبانی از کیبورد برای تست در Editor
+public static class SimpleMobileInput
+{
+    // دامنه: -1..1
+    public static float Accel { get; private set; }   // گاز (1) یا دنده عقب (-1)
+    public static float Steer { get; private set; }   // چپ/راست
+    public static bool Brake { get; private set; }
+
+    // فراخوانی از UI
+    public static void SetAccel(float v) { Accel = Mathf.Clamp(v, -1f, 1f); }
+    public static void SetSteer(float v) { Steer = Mathf.Clamp(v, -1f, 1f); }
+    public static void SetBrake(bool on) { Brake = on; }
+
+#if UNITY_EDITOR || UNITY_STANDALONE
+    [RuntimeInitializeOnLoadMethod]
+    static void HookKeyboard()
+    {
+        var go = new GameObject("KeyboardInputProxy");
+        go.AddComponent<KeyboardInputProxy>();
+        Object.DontDestroyOnLoad(go);
+    }
+
+    class KeyboardInputProxy : MonoBehaviour
+    {
+        void Update()
+        {
+            float a = 0f;
+            if (Input.GetKey(KeyCode.W)) a = 1f;
+            else if (Input.GetKey(KeyCode.S)) a = -1f;
+            SetAccel(a);
+
+            float s = 0f;
+            if (Input.GetKey(KeyCode.A)) s = -1f;
+            else if (Input.GetKey(KeyCode.D)) s = 1f;
+            SetSteer(s);
+
+            SetBrake(Input.GetKey(KeyCode.Space));
+        }
+    }
+#endif
+}using UnityEngine;
+using UnityEngine.AI;
+
+[RequireComponent(typeof(NavMeshAgent))]
+public class PoliceChaseAI : MonoBehaviour
+{
+    public Transform target;           // ماشین بازیکن
+    public float detectRange = 60f;
+    public float loseRange = 120f;
+    public float ramForce = 8000f;     // ضربه هنگام برخورد
+    public Rigidbody rb;
+
+    NavMeshAgent agent;
+    bool chasing;
+
+    void Awake()
+    {
+        agent = GetComponent<NavMeshAgent>();
+        if (!rb) rb = GetComponent<Rigidbody>();
+    }
+
+    void Update()
+    {
+        if (!target) return;
+        float d = Vector3.Distance(transform.position, target.position);
+
+        if (!chasing && d < detectRange)
+            chasing = true;
+        else if (chasing && d > loseRange)
+            chasing = false;
+
+        if (chasing)
+        {
+            agent.enabled = true;
+            agent.SetDestination(target.position);
+        }
+        else if (agent.enabled)
+        {
+            agent.ResetPath();
+        }
+    }
+
+    void OnCollisionEnter(Collision c)
+    {
+        if (c.rigidbody && c.rigidbody.transform == target)
+        {
+            Vector3 dir = (target.position - transform.position).normalized;
+            c.rigidbody.AddForce(dir * ramForce, ForceMode.Impulse);
+        }
+    }
+}using UnityEngine;
+using UnityEngine.EventSystems;
+
+// به هر دکمه UI اضافه کنید و نوع ورودی را مشخص کنید
+public class MobileButton : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
+{
+    public enum Type { Gas, Reverse, Left, Right, Brake }
+    public Type type;
+
+    void Set(bool down)
+    {
+        switch (type)
+        {
+            case Type.Gas:     SimpleMobileInput.SetAccel(down ? 1f : 0f); break;
+            case Type.Reverse: SimpleMobileInput.SetAccel(down ? -1f : 0f); break;
+            case Type.Left:    SimpleMobileInput.SetSteer(down ? -1f : 0f); break;
+            case Type.Right:   SimpleMobileInput.SetSteer(down ? 1f : 0f); break;
+            case Type.Brake:   SimpleMobileInput.SetBrake(down); break;
+        }
+    }
+
+    public void OnPointerDown(PointerEventData e) => Set(true);
+    public void OnPointerUp(PointerEventData e) => Set(false);
+}using UnityEngine;
+using UnityEngine.SceneManagement;
+
+public class MainMenu : MonoBehaviour
+{
+    [SerializeField] GameObject controlsPanel;
+
+    public void OnPlay()
+    {
+        SceneManager.LoadScene("City"); // نام صحنه بازی
+    }
+
+    public void OnControls()
+    {
+        if (controlsPanel) controlsPanel.SetActive(true);
+    }
+
+    public void OnExit()
+    {
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
+    }
+}
